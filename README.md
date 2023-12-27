@@ -13,7 +13,7 @@ See your board specs to know what type of pins are located where.
 ![alt text](https://alexlubbock.com/images/esp32-sd-card-wiring.jpg)
 
 ### Controll circuit
-![alt text](https://github.com/leonXtiger/cusom-billy-the-bass/blob/main/image.jpg?raw=true)
+![alt text](https://github.com/leonXtiger/custom-billy-the-bass/blob/main/Screenshot.png?raw=true)
 
 Note that the amplifier circuit is not included, buy a reasonable good one instead in the 1-2 watt range.
 
