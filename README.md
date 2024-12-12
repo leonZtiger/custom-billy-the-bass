@@ -3,9 +3,6 @@ Code for controlling billy the bass using a esp32
 
 # Setup
 
-First look at this video for overall guidens 
-https://www.youtube.com/watch?v=OZoRDpIZ-T8
-
 ## code
 If using a esp32-wroomer no changes needed.
 If not check how to wire the sd card correctly and change the outputs pins in the code.
