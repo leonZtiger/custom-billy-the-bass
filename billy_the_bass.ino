@@ -1,10 +1,9 @@
-// important!
-// 1. Make sure that the sd-card only contains .wav files.
-// 2. The wav files need to be 8-bit, mono with a sample rate of 16000 max
-// 3. This code is meant to run on the esp32-wroomer, it can be ran on other platforms but delays and such might need changing. 
-// 4. Set Event to run on core 0.
-// 5. Set the clock speed to be 240mhz.
-// 6. Connect the sd-card accordingly to the readme pictures
+// Custom Billy the Bass Code
+// 1. Ensure the SD card only contains .wav files.
+// 2. WAV files must be 8-bit, mono, with a maximum sample rate of 16,000 Hz.
+// 3. Designed for ESP32-WROOM, though delays and settings might need adjustment for other boards.
+// 4. Set tasks to run on core 0 and clock speed to 240 MHz.
+// 5. Follow the wiring diagrams in the README for proper setup.
 
 #include "FS.h"
 #include "SD.h"
@@ -12,11 +11,14 @@
 #include <vector>
 #include <string>
 
+// Sensitivity thresholds
 #define TALK_SENS 135
 #define HEAD_SENS 170
 
-#define BUFFER_SIZE 4096 * 2
+// Buffer settings
+#define BUFFER_SIZE 8192
 
+// Pin assignments
 #define DAC_PIN 26
 #define TALK_MOTOR_PIN 21
 #define HEAD_MOTOR_PIN 13
@@ -24,193 +26,144 @@
 #define SENSOR_PIN 35
 #define BUTTON_PIN 33
 
+// Global variables
 std::vector<std::string> audio_files;
-
 char audio_buffers[2][BUFFER_SIZE];
 bool talk_track[2][BUFFER_SIZE];
-// buffer_index is used for playback and !buffer_index for filling with new data
-bool buffer_index = false;
-// mutex for syncing chunk loading
-SemaphoreHandle_t parse_mutex;
+bool currentBufferIndex = false;
+SemaphoreHandle_t parseMutex;
 bool parse = false;
-bool killPlayer = false;
+bool terminatePlayer = false;
 
-std::vector<std::string> get_audio_filenames(fs::FS& sd) {
-  std::vector<std::string> files;
+// Function to retrieve .wav files from the SD card
+std::vector<std::string> getAudioFilenames(fs::FS& sd) {
+    std::vector<std::string> files;
+    File root = sd.open("/");
+    File file = root.openNextFile();
 
-  File root = sd.open("/");
-
-  File file = root.openNextFile();
-
-  while (file) {
-    if (!file.isDirectory()) {
-      files.push_back(std::string("/") + file.name());
-    }
-    file = root.openNextFile();
-  }
-
-  return files;
-}
-
-void buffer_player_task(void* frame_delay) {
-
-  while (!killPlayer) {
-
-    xSemaphoreTake(parse_mutex, portMAX_DELAY);
-
-    if (parse) {
-      parse = false;
-      // play the buffer
-      for (int i = 0; i < BUFFER_SIZE; i++) {
-
-        dacWrite(DAC_PIN, (uint8_t)(audio_buffers[buffer_index][i]));
-        digitalWrite(TALK_MOTOR_PIN, talk_track[buffer_index][i]);
-
-        delayMicroseconds(*((int*)frame_delay));
-      }
-    }
-    xSemaphoreGive(parse_mutex);
-  }
-  vTaskDelete(NULL);
-}
-
-
-void play_audio_from_file(std::string& path, fs::FS& sd_ref) {
-
-  File file = sd_ref.open(path.c_str(), FILE_READ);
-
-  if (!file) {
-    Serial.println("failed to open file: ");
-    Serial.print(path.c_str());
-    return;
-  }
-
-  // load header
-  uint16_t numChannels = 0;
-  uint32_t sampleRate = 0;
-  uint16_t bitsPerSample = 0;
-
-  char junk[22];
-  file.readBytes(junk, sizeof(junk));
-
-  char channel_chunk[2];
-  file.readBytes(channel_chunk, sizeof(channel_chunk));
-  numChannels = ((uint16_t)channel_chunk[1]) << 8 | (uint16_t)channel_chunk[0];
-
-  char sampleRate_chunk[4];
-  file.readBytes(sampleRate_chunk, sizeof(sampleRate_chunk));
-  sampleRate = ((uint32_t)sampleRate_chunk[3]) << 24 | ((uint32_t)sampleRate_chunk[2]) << 16 | ((uint32_t)sampleRate_chunk[1]) << 8 | (uint32_t)sampleRate_chunk[0];
-
-  char junk2[6];
-  file.readBytes(junk2, sizeof(junk2));
-
-  char bitsPerSample_chunk[2];
-  file.readBytes(bitsPerSample_chunk, sizeof(bitsPerSample_chunk));
-  bitsPerSample = (uint16_t)bitsPerSample_chunk[1] << 8 | (uint16_t)bitsPerSample_chunk[0];
-
-  file.readBytes(nullptr, sizeof(char) * 8);
-
-  Serial.println(numChannels);
-  Serial.println(sampleRate);
-  Serial.println(bitsPerSample);
-
-  uint32_t frame_delay = (1000000.0f / (sampleRate) / numChannels) - 18;
-
-  if (bitsPerSample > 8) {
-    Serial.println("Too high resolution, must be unsigned 8-bit");
-    Serial.print(path.c_str());
-    return;
-  }
-
-  file.readBytes(audio_buffers[buffer_index], sizeof(audio_buffers[buffer_index]));
-
-  killPlayer = false;
-  
-  TaskHandle_t bufferTask;
-  // launch player on second core
-  xTaskCreatePinnedToCore(buffer_player_task, "buffer_player", BUFFER_SIZE * 2 + 10000, (void*)&frame_delay, 1, &bufferTask, 1);
-  
-  while (file.available()) {
-    //sync parser task
-    parse = true;
-    xSemaphoreGive(parse_mutex);
-    file.readBytes(audio_buffers[!buffer_index], sizeof(audio_buffers[buffer_index]));
-    
-    // create talk animation
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-      
-      if (audio_buffers[!buffer_index][i] > TALK_SENS) {
-        // open mouth 300 frames before and 500, theres a small delay and this make it seamless
-        for (int j = max(i - 300, 0); j < min(i + 500, BUFFER_SIZE); j++) {
-          talk_track[!buffer_index][j] = 1;
+    while (file) {
+        if (!file.isDirectory()) {
+            files.push_back(std::string("/") + file.name());
         }
-        i += 500;
-      } else {
-        talk_track[!buffer_index][i] = 0;
-      }
+        file = root.openNextFile();
     }
-    
-    // move head randomly
-    if (random(0, 10) == 0) {
-      digitalWrite(HEAD_MOTOR_PIN, HIGH);
-    } else{
-      digitalWrite(HEAD_MOTOR_PIN, LOW);
-    }
-    
-    xSemaphoreTake(parse_mutex, 1000);
-    buffer_index = !buffer_index;
-  }
-  killPlayer = true;
-  file.close();
+    return files;
 }
 
+// Task to play buffered audio
+void bufferPlayerTask(void* frameDelay) {
+    while (!terminatePlayer) {
+        xSemaphoreTake(parseMutex, portMAX_DELAY);
+        if (parse) {
+            parse = false;
+            for (int i = 0; i < BUFFER_SIZE; i++) {
+                dacWrite(DAC_PIN, (uint8_t)(audio_buffers[currentBufferIndex][i]));
+                digitalWrite(TALK_MOTOR_PIN, talk_track[currentBufferIndex][i]);
+                delayMicroseconds(*((int*)frameDelay));
+            }
+        }
+        xSemaphoreGive(parseMutex);
+    }
+    vTaskDelete(NULL);
+}
+
+// Function to play a .wav file
+void playAudioFromFile(const std::string& path, fs::FS& sd) {
+    File file = sd.open(path.c_str(), FILE_READ);
+    if (!file) {
+        Serial.println("Failed to open file: " + path);
+        return;
+    }
+
+    // Parse WAV header
+    uint16_t numChannels = 0, bitsPerSample = 0;
+    uint32_t sampleRate = 0;
+
+    char buffer[22];
+    file.readBytes(buffer, sizeof(buffer));
+    file.readBytes((char*)&numChannels, 2);
+    file.readBytes((char*)&sampleRate, 4);
+    file.readBytes(buffer, 6); // Skip bytes
+    file.readBytes((char*)&bitsPerSample, 2);
+
+    // Check audio format
+    if (bitsPerSample > 8 || numChannels != 1) {
+        Serial.println("Invalid WAV file format (must be 8-bit mono).");
+        file.close();
+        return;
+    }
+
+    uint32_t frameDelay = (1000000.0f / sampleRate) - 18;
+    file.readBytes(audio_buffers[currentBufferIndex], BUFFER_SIZE);
+
+    terminatePlayer = false;
+    TaskHandle_t bufferTask;
+    xTaskCreatePinnedToCore(bufferPlayerTask, "BufferPlayer", BUFFER_SIZE * 2 + 10000, &frameDelay, 1, &bufferTask, 1);
+
+    while (file.available()) {
+        parse = true;
+        xSemaphoreGive(parseMutex);
+
+        file.readBytes(audio_buffers[!currentBufferIndex], BUFFER_SIZE);
+
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            if (audio_buffers[!currentBufferIndex][i] > TALK_SENS) {
+                for (int j = max(i - 300, 0); j < min(i + 500, BUFFER_SIZE); j++) {
+                    talk_track[!currentBufferIndex][j] = true;
+                }
+                i += 500;
+            } else {
+                talk_track[!currentBufferIndex][i] = false;
+            }
+        }
+
+        digitalWrite(HEAD_MOTOR_PIN, random(0, 10) == 0 ? HIGH : LOW);
+        xSemaphoreTake(parseMutex, 1000);
+        currentBufferIndex = !currentBufferIndex;
+    }
+
+    terminatePlayer = true;
+    file.close();
+}
+
+// Setup function
 void setup() {
+    pinMode(TALK_MOTOR_PIN, OUTPUT);
+    pinMode(SPEAKER_ACTIVATE, OUTPUT);
+    pinMode(HEAD_MOTOR_PIN, OUTPUT);
+    pinMode(SENSOR_PIN, INPUT_PULLUP);
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    pinMode(DAC_PIN, OUTPUT);
 
-  pinMode(TALK_MOTOR_PIN, OUTPUT);
-  pinMode(SPEAKER_ACTIVATE, OUTPUT);
-  pinMode(HEAD_MOTOR_PIN, OUTPUT);
-  pinMode(SENSOR_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(DAC_PIN, OUTPUT);
+    digitalWrite(SPEAKER_ACTIVATE, LOW);
+    Serial.begin(115200);
 
-  // turn off speakers
-  digitalWrite(SPEAKER_ACTIVATE, LOW);
+    if (!SD.begin()) {
+        Serial.println("SD card mount failed!");
+        return;
+    }
 
-  Serial.begin(115200);
-
-  if (!SD.begin()) {
-    Serial.println("Card Mount Failed");
-    return;
-  }
-
-  audio_files = get_audio_filenames(SD);
-
-  Serial.println("Found ");
-  Serial.print(audio_files.size());
-  Serial.print(" files.");
-
-  parse_mutex = xSemaphoreCreateMutex();
+    audio_files = getAudioFilenames(SD);
+    Serial.printf("Found %d files.\n", audio_files.size());
+    parseMutex = xSemaphoreCreateMutex();
 }
 
-void alive_fish() {
-  // get random file
-  int sound_index = random(0, audio_files.size());
-  Serial.println(audio_files[sound_index].c_str());
-  
-  // activate speaker
-  digitalWrite(SPEAKER_ACTIVATE, HIGH);
-  play_audio_from_file(audio_files[sound_index], SD);
+// Play a random audio file
+void aliveFish() {
+    int soundIndex = random(0, audio_files.size());
+    Serial.println(audio_files[soundIndex].c_str());
 
-  // kill fish
-  digitalWrite(SPEAKER_ACTIVATE, LOW);
-  digitalWrite(HEAD_MOTOR_PIN, LOW);
-  digitalWrite(TALK_MOTOR_PIN, LOW);
+    digitalWrite(SPEAKER_ACTIVATE, HIGH);
+    playAudioFromFile(audio_files[soundIndex], SD);
+
+    digitalWrite(SPEAKER_ACTIVATE, LOW);
+    digitalWrite(HEAD_MOTOR_PIN, LOW);
+    digitalWrite(TALK_MOTOR_PIN, LOW);
 }
 
+// Main loop
 void loop() {
-  alive_fish();
-  
-  // sleep until button is pressed, this lowers the current consumption and the batteri life span increases
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_33, 0);
-  esp_deep_sleep_start();
+    aliveFish();
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_33, 0);
+    esp_deep_sleep_start();
 }
